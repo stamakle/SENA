@@ -22,8 +22,7 @@ session_summaries.json
 chat_history_lite.jsonl
 logs/
 
-# Generated exports
-/data/exports/
-
-# Local data files
-/data/
+# Local data files (keep directory structure only)
+/data/**
+!/data/**/
+!/data/**/.gitkeep
