@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+.venv_user/
+.env
+.env.*
+
+# NiceGUI cache
+.nicegui/
+
+# Local session and telemetry artifacts
+session_live.json
+session_summaries.json
+chat_history_lite.jsonl
+logs/
+
+# Generated exports
+/data/exports/

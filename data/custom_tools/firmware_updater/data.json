@@ -1,0 +1,34 @@
+{
+    "repo": [
+        {
+            "ssdfwperegrine": "ssdfwperegrine",
+            "ssdfwperegrineion": "ssdfwperegrineion",
+			"ssdfwperegrinem" : "ssdfwperegrinem",
+			"ssdfwredtail" : "ssdfwredtail",
+			"ssdfwredtailm" : "ssdfwredtailm",
+			"ssdfwphoenixion" : "ssdfwphoenixion",
+			"ssdfwphoenixionlc" : "ssdfwphoenixionlc"
+			
+        }
+    ],
+    "days": [
+        {
+            "rel": "rel",
+			"test": "test",
+			"daily": "daily",
+			"weekly": "weekly",
+			"nightly": "nightly",
+			"production": "production",
+			"alternate": "alternate",
+			"Prod-alternate": "Prod-alternate",
+			"validate" : "validate"
+			
+        }
+    ],
+	"rel": [
+        {
+            "Prod_Signed": "PROD_SIGNED",
+			"MFG_FW": "MFG_FW_FILE_PATH"	
+        }
+    ]
+}

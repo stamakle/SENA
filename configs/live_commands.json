@@ -1,0 +1,36 @@
+{
+  "commands": [
+    {
+      "name": "nvme-fwlog",
+      "command": "nvme fw-log /dev/nvme0",
+      "aliases": [
+        "fwlog",
+        "nvme fw-log",
+        "nvme-fw-log"
+      ],
+      "summary_default": false,
+      "description": "Read NVMe firmware log page from /dev/nvme0"
+    },
+    {
+      "name": "nvme-list-and-fetch-nvme-id-ctrl",
+      "command": "nvme list and fetch nvme id-ctrl",
+      "aliases": [],
+      "summary_default": false,
+      "description": "Approved command"
+    },
+    {
+      "name": "nvme-id-ctrl",
+      "command": "nvme id-ctrl",
+      "aliases": [],
+      "summary_default": false,
+      "description": "Approved command"
+    },
+    {
+      "name": "nvme-id-ctrl-dev-nvme0n1",
+      "command": "nvme id-ctrl  /dev/nvme0n1",
+      "aliases": [],
+      "summary_default": false,
+      "description": "Approved command"
+    }
+  ]
+}
