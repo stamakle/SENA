@@ -24,3 +24,6 @@ logs/
 
 # Generated exports
 /data/exports/
+
+# Local data files
+/data/
