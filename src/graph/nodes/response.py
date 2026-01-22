@@ -15,9 +15,13 @@ from src.agent.session_memory import get_summary
 from src.db.postgres import get_connection
 from src.graph.state import GraphState, coerce_state, state_to_dict
 from src.graph.nodes.live_rag import _extract_rack, _fetch_hosts_by_rack
+from src.db.evidence_store import load_recent_evidence
 from src.llm.ollama_client import chat_completion
 from src.agent.model_router import select_chat_model
 from prompt import SYSTEM_PROMPT
+
+# P0 Recommendation #7: NVMe Status Code Interpretation
+from src.domain.nvme_status import interpret_nvme_output, parse_status_from_output
 
 
 # Step 12: Graph response node.
@@ -198,6 +202,20 @@ def _wants_summary(query: str) -> bool:
     )
 
 
+def _extract_host_hint(query: str) -> str:
+    match = re.search(
+        r"(?:service\s*tag|service[-_]?tag|system\s*id|system_id|hostname|host|server|system)\s*[:#]?\s*([\w.-]+)",
+        query,
+        re.IGNORECASE,
+    )
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"\bon\s+([\w.-]+)", query, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
 def _wants_cpu_summary(query: str) -> bool:
     """Return True when the query asks for a CPU summary."""
 
@@ -319,6 +337,31 @@ def _extract_nvme_lines(output: str) -> list[str]:
         if "non-volatile memory controller" in lowered or "nvme" in lowered:
             lines.append(line.strip())
     return lines
+
+
+def _enrich_nvme_status_codes(output: str) -> str:
+    """Enrich output with NVMe status code interpretations (P0 #7).
+    
+    Detects status codes in command output and appends human-readable
+    interpretations with severity and recommended actions.
+    """
+    if not output:
+        return output
+    
+    # Check if output contains NVMe-related content
+    lower = output.lower()
+    if "nvme" not in lower and "status:" not in lower:
+        return output
+    
+    # Try to interpret any status codes found
+    try:
+        interpretation = interpret_nvme_output(output)
+        if interpretation:
+            return output + "\n" + interpretation
+    except Exception:
+        pass  # Silently fail if interpretation fails
+    
+    return output
 
 
 def _is_lscpu_output(output: str) -> bool:
@@ -589,6 +632,9 @@ def response_node(state: GraphState | dict) -> dict:
     """Generate a final response for the user."""
 
     current = coerce_state(state)
+    if (current.query or "").strip().startswith("/") and not current.response:
+        current.response = "No tool response captured. Check live output or retry the command."
+        return state_to_dict(current)
     if current.response:
         return state_to_dict(current)
     if current.route == "help":
@@ -878,6 +924,26 @@ def response_node(state: GraphState | dict) -> dict:
         user_prompt = f"{context_hint}{live_block}Session Summary:\n{session_summary}\n\n{base}"
     else:
         user_prompt = f"{context_hint}{live_block}{history_block}{base}"
+
+    # Evidence block for RCA / follow-ups
+    evidence_block = ""
+    if current.session_id:
+        try:
+            evidence = load_recent_evidence(current.session_id, limit=5)
+        except Exception:
+            evidence = []
+        if evidence:
+            lines = ["Recent Evidence Events:"]
+            for ev in evidence:
+                host = ev.get("host") or ""
+                source = ev.get("source") or ""
+                signals = ev.get("signals") or {}
+                signal_text = ", ".join(
+                    f"{k}={v}" for k, v in list(signals.items())[:6]
+                )
+                lines.append(f"- {host} | {source} | {signal_text}".strip())
+            evidence_block = "\n".join(lines) + "\n\n"
+            user_prompt = f"{evidence_block}{user_prompt}"
     rag_mode = (cfg.rag_mode or "auto").strip().lower()
     if cfg.rag_only:
         rag_mode = "rag_only"

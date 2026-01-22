@@ -75,11 +75,13 @@ def create_tables(conn, embed_dim: int) -> None:
                 precondition TEXT,
                 steps JSONB,
                 source TEXT,
+                ingested_at TIMESTAMPTZ DEFAULT now(),
                 tsv TSVECTOR,
                 embedding VECTOR({embed_dim})
             )
             """
         )
+        cur.execute("ALTER TABLE test_cases ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ DEFAULT now()")
         cur.execute(
             f"""
             CREATE TABLE IF NOT EXISTS system_logs (
@@ -88,11 +90,13 @@ def create_tables(conn, embed_dim: int) -> None:
                 model TEXT,
                 rack TEXT,
                 metadata JSONB,
+                ingested_at TIMESTAMPTZ DEFAULT now(),
                 tsv TSVECTOR,
                 embedding VECTOR({embed_dim})
             )
             """
         )
+        cur.execute("ALTER TABLE system_logs ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ DEFAULT now()")
         # Spec-RAG Table
         cur.execute(
             f"""
@@ -101,11 +105,103 @@ def create_tables(conn, embed_dim: int) -> None:
                 title TEXT,
                 content TEXT,
                 metadata JSONB,
+                ingested_at TIMESTAMPTZ DEFAULT now(),
                 tsv TSVECTOR,
                 embedding VECTOR({embed_dim})
             )
             """
         )
+        cur.execute("ALTER TABLE specs ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ DEFAULT now()")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id TEXT PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                metadata JSONB
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_messages (
+                id BIGSERIAL PRIMARY KEY,
+                session_id TEXT REFERENCES sessions(session_id) ON DELETE CASCADE,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_summaries (
+                session_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+                summary TEXT NOT NULL,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_session_messages_session_id_created_at
+            ON session_messages(session_id, created_at)
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS live_outputs (
+                session_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+                output TEXT,
+                summary TEXT,
+                truncated BOOLEAN DEFAULT FALSE,
+                host TEXT,
+                command TEXT,
+                output_mode TEXT,
+                sudo_ok BOOLEAN,
+                sudo_message TEXT,
+                strict_mode BOOLEAN,
+                auto_execute BOOLEAN,
+                pending BOOLEAN DEFAULT FALSE,
+                proposed JSONB,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS evidence_events (
+                id BIGSERIAL PRIMARY KEY,
+                session_id TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
+                host TEXT,
+                source TEXT,
+                event_time TIMESTAMPTZ NOT NULL DEFAULT now(),
+                signals JSONB,
+                raw_excerpt TEXT,
+                tsv TSVECTOR,
+                embedding VECTOR({embed_dim})
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_evidence_events_tsv ON evidence_events USING GIN(tsv)")
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS incidents (
+                incident_id TEXT PRIMARY KEY,
+                title TEXT,
+                description TEXT,
+                resolution TEXT,
+                tags JSONB,
+                metadata JSONB,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                tsv TSVECTOR,
+                embedding VECTOR({embed_dim})
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_incidents_tsv ON incidents USING GIN(tsv)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_test_cases_tsv ON test_cases USING GIN(tsv)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_system_logs_tsv ON system_logs USING GIN(tsv)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_specs_tsv ON specs USING GIN(tsv)")
@@ -173,9 +269,9 @@ def upsert_test_cases(
             cur.execute(
                 """
                 INSERT INTO test_cases
-                    (case_id, name, status, type, description, precondition, steps, source, tsv, embedding)
+                    (case_id, name, status, type, description, precondition, steps, source, ingested_at, tsv, embedding)
                 VALUES
-                    (%s, %s, %s, %s, %s, %s, %s, %s, to_tsvector('english', %s), %s::vector)
+                    (%s, %s, %s, %s, %s, %s, %s, %s, now(), to_tsvector('english', %s), %s::vector)
                 ON CONFLICT (case_id) DO UPDATE SET
                     name = EXCLUDED.name,
                     status = EXCLUDED.status,
@@ -184,6 +280,7 @@ def upsert_test_cases(
                     precondition = EXCLUDED.precondition,
                     steps = EXCLUDED.steps,
                     source = EXCLUDED.source,
+                    ingested_at = now(),
                     tsv = EXCLUDED.tsv,
                     embedding = EXCLUDED.embedding
                 """,
@@ -218,14 +315,15 @@ def upsert_system_logs(
             cur.execute(
                 """
                 INSERT INTO system_logs
-                    (system_id, hostname, model, rack, metadata, tsv, embedding)
+                    (system_id, hostname, model, rack, metadata, ingested_at, tsv, embedding)
                 VALUES
-                    (%s, %s, %s, %s, %s, to_tsvector('english', %s), %s::vector)
+                    (%s, %s, %s, %s, %s, now(), to_tsvector('english', %s), %s::vector)
                 ON CONFLICT (system_id) DO UPDATE SET
                     hostname = EXCLUDED.hostname,
                     model = EXCLUDED.model,
                     rack = EXCLUDED.rack,
                     metadata = EXCLUDED.metadata,
+                    ingested_at = now(),
                     tsv = EXCLUDED.tsv,
                     embedding = EXCLUDED.embedding
                 """,

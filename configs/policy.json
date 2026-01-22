@@ -1,0 +1,13 @@
+{
+  "require_approval_patterns": [
+    "\\bnvme\\s+fw-(download|commit|activate)\\b",
+    "\\bnvme\\s+format\\b",
+    "\\bnvme\\s+sanitize\\b",
+    "\\bblkdiscard\\b",
+    "\\bdd\\s+if=",
+    "\\bmkfs\\b"
+  ],
+  "block_patterns": [
+    "\\brm\\s+-rf\\s+/\\b"
+  ]
+}

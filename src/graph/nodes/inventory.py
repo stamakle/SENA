@@ -33,8 +33,10 @@ def inventory_node(state: GraphState | dict) -> dict:
         current.response = "Missing host or rack. Example: /inventory rack D1 or /inventory host aseda-VMware-Vm1"
         return state_to_dict(current)
     try:
-        output = run_ssh_command(host, "nvme list", cfg.ssh_config_path, timeout_sec=cfg.request_timeout_sec)
-        current.response = f"NVMe inventory for {host}:\n{output}"
+        result = run_ssh_command(host, "nvme list", cfg.ssh_config_path, timeout_sec=cfg.request_timeout_sec)
+        if not result.success:
+            raise RuntimeError(result.stderr or f"Command failed with exit {result.exit_code}")
+        current.response = f"NVMe inventory for {host}:\n{result.stdout}"
     except Exception as exc:
         current.response = f"Inventory failed for {host}: {exc}"
     return state_to_dict(current)

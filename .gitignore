@@ -27,7 +27,5 @@ logs/
 validation_log.jsonl
 validation_report*.md
 
-# Local data files (keep directory structure only)
-/data/**
-!/data/**/
-!/data/**/.gitkeep
+# Data files are versioned for portability (keep secrets and run outputs ignored)
+data/exports/

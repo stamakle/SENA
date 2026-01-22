@@ -23,18 +23,27 @@ from src.graph.nodes.recovery import recovery_node
 from src.graph.nodes.retrieval import retrieval_node
 from src.graph.nodes.response import response_node
 from src.graph.nodes.supervisor import supervisor_node
+from src.graph.nodes.manager import manager_node
+from src.graph.nodes.team_lead import team_lead_node
 from src.graph.state import GraphState, coerce_state
 from src.config import load_config
 from src.agent.metrics import append_metric
 from pathlib import Path
 import time
 from src.agent.feedback import append_feedback_log
+from src.db.session_store import load_messages as load_session_messages
+from src.db.session_store import append_message as append_session_message
+from src.db.session_store import ensure_session as ensure_session_row
+from src.db.live_store import get_live_entry as get_live_entry_db
 
 from src.graph.nodes.critic import critic_node
 from src.graph.nodes.scientist import scientist_node
 from src.graph.nodes.correlation import correlation_node
 from src.graph.nodes.drift import drift_node
 from src.graph.nodes.triage import triage_node
+
+# P1 #1: Step executor for iterative plan execution
+from src.graph.nodes.step_executor import step_executor_node
 
 def _route(state: GraphState | dict) -> str:
     """Return the next node based on the supervisor decision."""
@@ -94,6 +103,29 @@ def _route(state: GraphState | dict) -> str:
     return "retrieval"
 
 
+def _route_manager(state: GraphState | dict) -> str:
+    """Route from manager to team_lead or supervisor."""
+    current = coerce_state(state)
+    if current.route == "team_lead":
+        return "team_lead"
+    return "supervisor"
+
+
+def _route_critic(state: GraphState | dict) -> str:
+    """Route based on critique status."""
+    current = coerce_state(state)
+    status = (current.critique_status or "").lower()
+    if status == "approved":
+        return "step_executor"
+    if status == "rejected":
+        if current.iteration_count >= current.max_iterations:
+            return "response"
+        return "planner"
+    if status == "needs_revision":
+        return "planner"
+    return "response"
+
+
 def build_graph():
     """Build and compile the LangGraph flow."""
 
@@ -105,6 +137,8 @@ def build_graph():
         ) from exc
 
     graph = StateGraph(GraphState)
+    graph.add_node("manager", manager_node)
+    graph.add_node("team_lead", team_lead_node)
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("retrieval", retrieval_node)
     graph.add_node("live_rag", live_rag_node)
@@ -133,8 +167,20 @@ def build_graph():
     graph.add_node("correlation", correlation_node)
     graph.add_node("drift", drift_node)
     graph.add_node("triage", triage_node)
+    
+    # P1 #1: Step executor for iterative plan execution
+    graph.add_node("step_executor", step_executor_node)
 
-    graph.set_entry_point("supervisor")
+    graph.set_entry_point("manager")
+    graph.add_conditional_edges(
+        "manager",
+        _route_manager,
+        {
+            "supervisor": "supervisor",
+            "team_lead": "team_lead",
+        },
+    )
+    graph.add_edge("team_lead", "supervisor")
     graph.add_conditional_edges(
         "supervisor",
         _route,
@@ -192,7 +238,17 @@ def build_graph():
     graph.add_edge("recovery", "response")
     
     # Autonomy Edges -> Response
-    graph.add_edge("critic", "response")
+    # Critic routes based on approval status
+    graph.add_conditional_edges(
+        "critic",
+        _route_critic,
+        {
+            "step_executor": "step_executor",
+            "planner": "planner",
+            "response": "response",
+        },
+    )
+    graph.add_edge("step_executor", "response")
     # graph.add_edge("scientist", "response") # Now routed to critic
     graph.add_edge("correlation", "response")
     graph.add_edge("drift", "response")
@@ -207,11 +263,33 @@ def run_graph(query: str, history: list[dict] | None = None, session_id: str | N
 
     graph = build_graph()
     start = time.monotonic()
-    state = GraphState(query=query, history=history or [], session_id=session_id)
+    resolved_history = history or []
+    if session_id and not resolved_history:
+        try:
+            resolved_history = load_session_messages(session_id, limit=50)
+        except Exception:
+            resolved_history = []
+    state = GraphState(query=query, history=resolved_history, session_id=session_id)
+    if session_id:
+        try:
+            live_entry = get_live_entry_db(session_id)
+            if live_entry:
+                state.last_live_output = live_entry.get("output") or ""
+                state.last_live_summary = live_entry.get("summary") or ""
+        except Exception:
+            pass
     result = graph.invoke(state)
     final_state = coerce_state(result)
     cfg = load_config()
     duration_ms = (time.monotonic() - start) * 1000.0
+    if session_id:
+        try:
+            ensure_session_row(session_id)
+            append_session_message(session_id, "user", query)
+            if final_state.response:
+                append_session_message(session_id, "assistant", final_state.response)
+        except Exception:
+            pass
     if cfg.feedback_log_enabled:
         append_feedback_log(
             cfg.feedback_log_path,
@@ -243,15 +321,30 @@ def run_graph(query: str, history: list[dict] | None = None, session_id: str | N
     return final_state
 
 
-def stream_run_graph(query: str, history: list[dict] | None = None, session_id: str | None = None):
+async def stream_run_graph(query: str, history: list[dict] | None = None, session_id: str | None = None):
     """Run the LangGraph flow and yield intermediate events."""
 
     graph = build_graph()
     start = time.monotonic()
-    state = GraphState(query=query, history=history or [], session_id=session_id)
+    resolved_history = history or []
+    if session_id and not resolved_history:
+        try:
+            resolved_history = load_session_messages(session_id, limit=50)
+        except Exception:
+            resolved_history = []
+    state = GraphState(query=query, history=resolved_history, session_id=session_id)
+    if session_id:
+        try:
+            live_entry = get_live_entry_db(session_id)
+            if live_entry:
+                state.last_live_output = live_entry.get("output") or ""
+                state.last_live_summary = live_entry.get("summary") or ""
+        except Exception:
+            pass
     
     final_state = None
-    for event in graph.stream(state):
+    last_response: str | None = None
+    async for event in graph.astream(state):
         yield event
         # Keep track of the latest state to log metrics at the end
         for value in event.values():
@@ -260,6 +353,9 @@ def stream_run_graph(query: str, history: list[dict] | None = None, session_id: 
                  pass
             if isinstance(value, GraphState): # unlikely, usually dict
                  pass
+        for payload in event.values():
+            if isinstance(payload, dict) and payload.get("response"):
+                last_response = str(payload.get("response"))
 
     # Re-invoke to get final state for logging? 
     # Actually graph.stream yields updates. The state is accumulated.
@@ -275,4 +371,11 @@ def stream_run_graph(query: str, history: list[dict] | None = None, session_id: 
     # For metrics, we can't easily do it here without accumulating state.
     # Let's Skip metrics in stream_run_graph for now or try to approximate it.
     # Or better: The consumer (sena.py) can call a logging helper if needed.
-
+    if session_id:
+        try:
+            ensure_session_row(session_id)
+            append_session_message(session_id, "user", query)
+            if last_response:
+                append_session_message(session_id, "assistant", last_response)
+        except Exception:
+            pass

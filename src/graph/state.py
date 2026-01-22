@@ -13,19 +13,45 @@ from pydantic import BaseModel, Field
 # Step 12: LangGraph state schema (Pydantic).
 
 
+class PlanStep(BaseModel):
+    """Structured plan step for execution."""
+
+    step_id: str
+    host_selector: str
+    command: str
+    preconditions: List[str] = Field(default_factory=list)
+    expected_signals: List[str] = Field(default_factory=list)
+    risk: str = "low"
+    rollback: str = ""
+    verify_command: Optional[str] = None
+
+
 class ToolRequest(BaseModel):
     """Represents a tool request issued by the graph."""
 
     name: str
     args: Dict[str, Any] = Field(default_factory=dict)
+    # P1 #15: Tool chaining support - reference previous tool result
+    depends_on: Optional[str] = None  # ID of prior ToolRequest to chain from
+    request_id: Optional[str] = None  # Unique ID for this request
 
 
 class ToolResult(BaseModel):
     """Represents a tool execution result."""
 
     name: str
-    output: str = ""
+    stdout: str = ""
+    stderr: str = ""
+    exit_code: Optional[int] = None
+    duration_sec: Optional[float] = None
+    host: Optional[str] = None
+    command: Optional[str] = None
     error: Optional[str] = None
+    # P1 #14: Structured error taxonomy
+    error_code: Optional[str] = None
+    error_class: Optional[str] = None
+    recoverable: bool = True
+    request_id: Optional[str] = None  # Links back to ToolRequest
 
 
 class GraphState(BaseModel):
@@ -43,7 +69,9 @@ class GraphState(BaseModel):
     citations: List[Dict[str, str]] = Field(default_factory=list)
     response: str = ""
     plan: str = ""
+    plan_steps: List[PlanStep] = Field(default_factory=list)
     critique: str = ""
+    critique_status: str = ""
     hypothesis: str = ""
     observations: str = ""
     tool_requests: List[ToolRequest] = Field(default_factory=list)
@@ -52,6 +80,15 @@ class GraphState(BaseModel):
     last_live_summary: str = ""
     debug: List[str] = Field(default_factory=list)
     error: Optional[str] = None
+    role_assignment: Dict[str, Any] = Field(default_factory=dict)
+    
+    # P1 #2: Goal decomposition tracking
+    goal_tracker: Dict[str, Any] = Field(default_factory=dict)
+    
+    # P1 #21: Checkpointing for long-running tasks
+    checkpoint: Optional[str] = None
+    iteration_count: int = 0
+    max_iterations: int = 10
 
 
 def _model_dump(model: BaseModel) -> Dict[str, Any]:

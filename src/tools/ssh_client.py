@@ -11,6 +11,8 @@ import re
 import socket
 from pathlib import Path
 from typing import Iterable, List, Dict, Any
+from dataclasses import dataclass
+import time
 
 from src.config import load_config
 from src.db.postgres import get_connection
@@ -22,6 +24,18 @@ def _is_ip(identifier: str) -> bool:
     return bool(re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", identifier.strip()))
 
 import paramiko
+
+
+@dataclass
+class SSHCommandResult:
+    """Structured SSH command result."""
+    host: str
+    command: str
+    stdout: str
+    stderr: str
+    exit_code: int
+    duration_sec: float
+    success: bool
 
 
 # Step 10: Add SSH execution with allowlists.
@@ -304,8 +318,8 @@ def run_ssh_command(
     command: str,
     config_path: str | Path,
     timeout_sec: int | None = None,
-) -> str:
-    """Run an allowlisted SSH command and return stdout text."""
+) -> SSHCommandResult:
+    """Run an allowlisted SSH command and return structured result."""
 
     config = load_ssh_config(config_path)
     resolved = _resolve_host_config(config, host)
@@ -315,6 +329,7 @@ def run_ssh_command(
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    start_time = time.time()
     try:
         key_filename = None
         key_path = resolved.get("key_path") or ""
@@ -390,21 +405,29 @@ def run_ssh_command(
         sudo_n_mode = command.strip().lower().startswith("sudo -n ")
 
         if sudo_n_mode:
-            output, error_text = _exec_command(client, command, timeout, None)
+            output, error_text, rc = _exec_command_with_status(client, command, timeout, None)
             if _requires_sudo_password(output, error_text) and password:
                 base = command.strip()[len("sudo -n ") :].strip()
                 sudo_command = f"sudo -S -p '' {base}"
-                output, error_text = _exec_command(client, sudo_command, timeout, password)
+                output, error_text, rc = _exec_command_with_status(client, sudo_command, timeout, password)
         elif sudo_mode and password:
             base = command.strip()[len("sudo ") :].strip()
             sudo_command = f"sudo -S -p '' {base}"
-            output, error_text = _exec_command(client, sudo_command, timeout, password)
+            output, error_text, rc = _exec_command_with_status(client, sudo_command, timeout, password)
         else:
-            output, error_text = _exec_command(client, command, timeout, None)
+            output, error_text, rc = _exec_command_with_status(client, command, timeout, None)
 
-        if error_text:
-            raise RuntimeError(error_text)
-        return output
+        duration = time.time() - start_time
+        success = rc == 0 and not _requires_sudo_password(output, error_text)
+        return SSHCommandResult(
+            host=host,
+            command=command,
+            stdout=output or "",
+            stderr=error_text or "",
+            exit_code=rc,
+            duration_sec=duration,
+            success=success,
+        )
     finally:
         client.close()
 
@@ -414,9 +437,10 @@ def run_ssh_command_with_status(
     command: str,
     config_path: str | Path,
     timeout_sec: int | None = None,
-) -> tuple[str, str, int]:
-    """Run an allowlisted SSH command and return stdout, stderr, exit code."""
+) -> SSHCommandResult:
+    """Run an allowlisted SSH command and return structured result."""
 
+    start_time = time.time()
     config = load_ssh_config(config_path)
     resolved = _resolve_host_config(config, host)
     allowlist = resolved["allowlist"]
@@ -511,7 +535,17 @@ def run_ssh_command_with_status(
             output, error_text, rc = _exec_command_with_status(client, sudo_command, timeout, password)
         else:
             output, error_text, rc = _exec_command_with_status(client, command, timeout, None)
-        return output, error_text, rc
+        duration = time.time() - start_time
+        success = rc == 0 and not _requires_sudo_password(output, error_text)
+        return SSHCommandResult(
+            host=host,
+            command=command,
+            stdout=output or "",
+            stderr=error_text or "",
+            exit_code=rc,
+            duration_sec=duration,
+            success=success,
+        )
     finally:
         client.close()
 
@@ -643,7 +677,7 @@ def run_remote_python(
         
         # Execute python3 on remote
         # We assume python3 is available.
-        output = run_ssh_command(host, f"python3 {remote_tmp}", config_path, timeout_sec)
+        result = run_ssh_command(host, f"python3 {remote_tmp}", config_path, timeout_sec)
         
         # Cleanup remote file (best effort)
         try:
@@ -651,7 +685,7 @@ def run_remote_python(
         except Exception:
             pass
             
-        return output
+        return result.stdout
     finally:
         # Cleanup local file
         if local_tmp.exists():
@@ -680,7 +714,8 @@ def run_nvme_json(
     # But run_ssh_command checks allowlist.
     # The user must ensure "sudo nvme *" is allowed or specific commands.
     
-    output = run_ssh_command(host, cmd, config_path, timeout_sec)
+    result = run_ssh_command(host, cmd, config_path, timeout_sec)
+    output = result.stdout
     
     # Attempt to find the start of JSON in case of noise (like sudo warnings)
     try:
@@ -711,4 +746,3 @@ def run_nvme_json(
             "raw_output": output,
             "details": str(exc)
         }
-

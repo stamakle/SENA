@@ -5,10 +5,22 @@ from __future__ import annotations
 import re
 
 from src.config import Config
+from src.domain.model_router import route_to_model, QueryComplexity
 
 
 def select_chat_model(query: str, has_context: bool, cfg: Config) -> str:
     """Pick a chat model based on query complexity and context."""
+
+    # Use advanced router when possible
+    decision = route_to_model(query, cfg)
+    if decision and hasattr(decision, "model"):
+        # Respect latency budget: use fast model if response is expected to be small
+        if decision.complexity == QueryComplexity.SIMPLE:
+            return cfg.chat_fast_model
+        if decision.complexity == QueryComplexity.MODERATE:
+            return cfg.chat_small_model
+        # Complex queries: pick GPU model if available
+        return cfg.chat_gpu_model or cfg.chat_model
 
     lower = query.lower()
     if re.search(r"\b(?:tc|dsstc)-\d+\b", lower):

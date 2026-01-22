@@ -5,6 +5,7 @@ from __future__ import annotations
 from src.config import load_config
 from src.graph.state import GraphState, coerce_state, state_to_dict
 from src.llm.ollama_client import chat_completion
+from src.db.evidence_store import load_recent_evidence
 
 def scientist_node(state: GraphState | dict) -> dict:
     """Formulate hypotheses based on observations."""
@@ -30,12 +31,28 @@ def scientist_node(state: GraphState | dict) -> dict:
         "Experiment: <command>"
     )
 
+    evidence_block = ""
+    if current.session_id:
+        try:
+            evidence = load_recent_evidence(current.session_id, limit=5)
+        except Exception:
+            evidence = []
+        if evidence:
+            lines = ["Recent Evidence:"]
+            for ev in evidence:
+                signals = ev.get("signals") or {}
+                lines.append(
+                    f"- {ev.get('host')} | {ev.get('source')} | "
+                    + ", ".join(f"{k}={v}" for k, v in list(signals.items())[:6])
+                )
+            evidence_block = "\n".join(lines) + "\n\n"
+
     try:
         response = chat_completion(
             cfg.ollama_base_url,
             cfg.planner_model,
             system_prompt,
-            f"Observation:\n{observation}",
+            f"{evidence_block}Observation:\n{observation}",
             cfg.request_timeout_sec,
         )
         current.response = f"{current.response}\n\n[Scientist Analysis]\n{response}"

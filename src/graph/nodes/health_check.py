@@ -46,7 +46,9 @@ def health_check_node(state: GraphState | dict) -> dict:
     sudo_ok = None
     if connectivity.get("port_open"):
         try:
-            run_ssh_command(host, "sudo -n true", cfg.ssh_config_path, timeout_sec=cfg.request_timeout_sec)
+            result = run_ssh_command(host, "sudo -n true", cfg.ssh_config_path, timeout_sec=cfg.request_timeout_sec)
+            if not result.success:
+                raise RuntimeError(result.stderr or f"Command failed with exit {result.exit_code}")
             sudo_ok = True
         except Exception as exc:
             sudo_ok = False

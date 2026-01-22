@@ -21,6 +21,10 @@ from src.agent.testcase_registry import resolve_testcase_script, list_testcase_i
 from src.agent.audit_pipeline import run_audit_pipeline
 from src.agent.testcase_status import append_run, update_run, latest_run, format_status
 from src.agent.testcase_auditor import load_testcase, audit_testcase, format_audit_markdown
+from src.domain.telemetry_parser import normalize_telemetry
+from src.db.evidence_store import store_evidence_event
+from src.domain.webhook_reporter import get_reporter
+from src.domain.traceability import get_requirement_for_test, enrich_test_result_with_trace
 from src.tools.ssh_client import (
     run_ssh_command,
     run_ssh_command_with_status,
@@ -135,6 +139,46 @@ def _write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def _write_json(path: Path, payload: Dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _write_junit_report(
+    path: Path,
+    case_id: str,
+    host: str,
+    status: str,
+    duration_sec: float,
+    error_message: str = "",
+) -> None:
+    import xml.etree.ElementTree as ET
+
+    testsuite = ET.Element("testsuite", {
+        "name": f"SENA {case_id}",
+        "tests": "1",
+        "failures": "1" if status == "fail" else "0",
+        "errors": "1" if status == "error" else "0",
+        "time": f"{duration_sec:.2f}",
+    })
+    testcase = ET.SubElement(testsuite, "testcase", {
+        "classname": "SENA.Testcase",
+        "name": case_id,
+        "time": f"{duration_sec:.2f}",
+    })
+    if status in {"fail", "error"}:
+        failure = ET.SubElement(testcase, "failure", {
+            "message": error_message or status,
+            "type": status,
+        })
+        failure.text = error_message or status
+    system_out = ET.SubElement(testcase, "system-out")
+    system_out.text = f"Host: {host}"
+    tree = ET.ElementTree(testsuite)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tree.write(path, encoding="utf-8", xml_declaration=True)
+
+
 
 
 def _collect_logs(host: str, cfg_path: str, timeout_sec: int) -> Dict[str, str]:
@@ -152,7 +196,11 @@ def _collect_logs(host: str, cfg_path: str, timeout_sec: int) -> Dict[str, str]:
     for name, command in commands.items():
         _ensure_allowlist(command.replace("sudo -n ", ""), cfg_path)
         try:
-            outputs[name] = run_ssh_command(host, command, cfg_path, timeout_sec=timeout_sec)
+            result = run_ssh_command(host, command, cfg_path, timeout_sec=timeout_sec)
+            if result.success:
+                outputs[name] = result.stdout
+            else:
+                outputs[name] = f"[ERROR] {result.stderr or 'command failed'}"
         except Exception as exc:
             outputs[name] = f"[ERROR] {exc}"
     return outputs
@@ -265,6 +313,8 @@ def _execute_testcase_run(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     remote_dir = f"/tmp/sena_tools/{case_id}"
     remote_script = f"{remote_dir}/{script.path.name}"
+    reporter = get_reporter()
+    reporter.report_test_started(case_id=case_id, host=host, session_id=session_id or "")
     try:
         upload_file(host, script.path, remote_script, cfg.ssh_config_path, timeout_sec=cfg.request_timeout_sec)
         msecli_path = script.path.parent / "msecli"
@@ -297,6 +347,15 @@ def _execute_testcase_run(
                     "summary": summary,
                 },
             )
+            reporter.report_test_completed(
+                case_id=case_id,
+                status="skipped",
+                host=host,
+                duration_sec=0.0,
+                error_message="connectivity failure",
+                session_id=session_id or "",
+                artifacts=[str(bundle)],
+            )
             return (
                 f"{summary}\n"
                 f"Analysis:\n{analysis}\n\n"
@@ -305,7 +364,11 @@ def _execute_testcase_run(
 
         if script.requires_device and not device:
             try:
-                nvme_list = run_ssh_command(host, "sudo -n nvme list", cfg.ssh_config_path)
+                nvme_result = run_ssh_command(host, "sudo -n nvme list", cfg.ssh_config_path)
+                if nvme_result.success:
+                    nvme_list = nvme_result.stdout
+                else:
+                    nvme_list = ""
                 match = re.search(r"(/dev/nvme\\S+)", nvme_list)
                 if match:
                     device = match.group(1)
@@ -326,6 +389,15 @@ def _execute_testcase_run(
                     "summary": summary,
                 },
             )
+            reporter.report_test_completed(
+                case_id=case_id,
+                status="skipped",
+                host=host,
+                duration_sec=0.0,
+                error_message="missing NVMe device",
+                session_id=session_id or "",
+                artifacts=[str(bundle)],
+            )
             return f"{summary}\nBundle saved: {bundle}"
 
         command_parts = ["python3", remote_script]
@@ -337,12 +409,16 @@ def _execute_testcase_run(
         command = " ".join(command_parts)
         _ensure_allowlist(command, cfg.ssh_config_path)
 
-        stdout, stderr, rc = run_ssh_command_with_status(
+        result = run_ssh_command_with_status(
             host,
             command,
             cfg.ssh_config_path,
             timeout_sec=cfg.request_timeout_sec,
         )
+        stdout = result.stdout
+        stderr = result.stderr
+        rc = result.exit_code or 1
+        duration_sec = result.duration_sec or 0.0
 
         _write_text(artifact_dir / "testcase_stdout.log", stdout)
         _write_text(artifact_dir / "testcase_stderr.log", stderr)
@@ -352,6 +428,15 @@ def _execute_testcase_run(
         logs = _collect_logs(host, cfg.ssh_config_path, cfg.request_timeout_sec)
         for name, content in logs.items():
             _write_text(artifact_dir / name, content)
+            signals = normalize_telemetry(name, content)
+            if signals:
+                store_evidence_event(
+                    session_id=session_id,
+                    host=host,
+                    source=name,
+                    signals=signals,
+                    raw_excerpt=content[:4000],
+                )
 
         facts = parse_logs(logs)
         _write_text(artifact_dir / "facts.json", json.dumps(facts, indent=2))
@@ -382,6 +467,52 @@ def _execute_testcase_run(
 
         bundle = _bundle_artifacts(artifact_dir, f"run_{case_id}_{host}_{timestamp}")
         summary = f"Testcase {case_id} complete on {host} (status: {status})."
+        trace_req = get_requirement_for_test(case_id)
+        trace_info: Dict[str, object] = {}
+        if trace_req:
+            trace_info = {
+                "requirement_id": trace_req.id,
+                "source_document": trace_req.source_document,
+                "section": trace_req.section,
+                "description": trace_req.description,
+            }
+
+        junit_path = artifact_dir / "junit_report.xml"
+        _write_junit_report(
+            junit_path,
+            case_id=case_id,
+            host=host,
+            status=status,
+            duration_sec=duration_sec,
+            error_message=stderr if status != "pass" else "",
+        )
+        json_report = {
+            "case_id": case_id,
+            "host": host,
+            "status": status,
+            "duration_sec": duration_sec,
+            "command": command,
+            "traceability": trace_info,
+            "artifacts": {
+                "bundle": str(bundle),
+                "junit": str(junit_path),
+                "stdout": str(artifact_dir / "testcase_stdout.log"),
+                "stderr": str(artifact_dir / "testcase_stderr.log"),
+            },
+        }
+        _write_json(artifact_dir / "testcase_result.json", json_report)
+
+        reporter.report_test_completed(
+            case_id=case_id,
+            status=status,
+            host=host,
+            duration_sec=duration_sec,
+            error_message=stderr if status != "pass" else "",
+            output=stdout,
+            artifacts=[str(bundle), str(junit_path)],
+            session_id=session_id or "",
+            metadata=trace_info,
+        )
         update_run(
             STATUS_PATH,
             run_id,
@@ -392,16 +523,29 @@ def _execute_testcase_run(
                 "summary": summary,
             },
         )
-        return (
+        response = (
             f"{summary}\n"
             f"{audit_summary}\n\n"
             f"Analysis:\n{analysis}\n\n"
             f"Bundle saved: {bundle}"
         )
+        if trace_req:
+            response = enrich_test_result_with_trace(response, case_id)
+        response += f"\nJUnit report: {junit_path}"
+        return response
     except Exception as exc:
         _write_text(artifact_dir / "error.txt", str(exc))
         bundle = _bundle_artifacts(artifact_dir, f"run_{case_id}_{host}_{timestamp}")
         summary = f"Testcase {case_id} failed on {host}: {exc}"
+        reporter.report_test_completed(
+            case_id=case_id,
+            status="fail",
+            host=host,
+            duration_sec=0.0,
+            error_message=str(exc),
+            session_id=session_id or "",
+            artifacts=[str(bundle)],
+        )
         update_run(
             STATUS_PATH,
             run_id,

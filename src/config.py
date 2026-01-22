@@ -22,6 +22,8 @@ class Config:
     chat_model: str
     chat_small_model: str
     chat_fast_model: str
+    chat_cpu_model: str
+    chat_gpu_model: str
     tool_picker_model: str
     planner_model: str
     embed_model: str
@@ -64,6 +66,7 @@ class Config:
     live_rack_max_workers: int
     metrics_enabled: bool
     metrics_path: str
+    router_latency_budget_ms: int
 
 
 def load_config() -> Config:
@@ -76,6 +79,8 @@ def load_config() -> Config:
         chat_model=os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:7b-instruct"),
         chat_small_model=os.getenv("OLLAMA_CHAT_SMALL_MODEL", "nemotron-mini:4b"),
         chat_fast_model=os.getenv("OLLAMA_CHAT_FAST_MODEL", "qwen2.5:1.5b"),
+        chat_cpu_model=os.getenv("OLLAMA_CHAT_CPU_MODEL", os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:7b-instruct")),
+        chat_gpu_model=os.getenv("OLLAMA_CHAT_GPU_MODEL", os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:7b-instruct")),
         tool_picker_model=os.getenv("OLLAMA_TOOL_PICKER_MODEL", "functiongemma"),
         planner_model=os.getenv("OLLAMA_PLANNER_MODEL", os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:7b-instruct")),
         embed_model=os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
@@ -124,4 +129,5 @@ def load_config() -> Config:
             "METRICS_PATH",
             str(Path(__file__).resolve().parents[2] / "logs" / "graph_metrics.jsonl"),
         ),
+        router_latency_budget_ms=int(os.getenv("ROUTER_LATENCY_BUDGET_MS", "800")),
     )

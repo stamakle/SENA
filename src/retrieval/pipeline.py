@@ -56,10 +56,21 @@ def _search_table(
         SELECT
             *,
             ts_rank_cd(tsv, plainto_tsquery('english', %s)) AS bm25_score,
-            1 - (embedding <=> %s::vector) AS vector_score
+            1 - (embedding <=> %s::vector) AS vector_score,
+            CASE
+                WHEN ingested_at IS NULL THEN 0
+                ELSE 1 / (1 + (EXTRACT(EPOCH FROM (now() - ingested_at)) / 86400))
+            END AS recency_score
         FROM {table}
         {where_sql}
-        ORDER BY (0.6 * ts_rank_cd(tsv, plainto_tsquery('english', %s)) + 0.4 * (1 - (embedding <=> %s::vector))) DESC
+        ORDER BY (
+            0.6 * ts_rank_cd(tsv, plainto_tsquery('english', %s)) +
+            0.3 * (1 - (embedding <=> %s::vector)) +
+            0.1 * CASE
+                WHEN ingested_at IS NULL THEN 0
+                ELSE 1 / (1 + (EXTRACT(EPOCH FROM (now() - ingested_at)) / 86400))
+            END
+        ) DESC
         LIMIT %s
     """
     with conn.cursor() as cur:

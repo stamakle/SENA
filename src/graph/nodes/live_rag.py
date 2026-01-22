@@ -38,6 +38,14 @@ from src.agent.live_memory import (
 from src.agent.summary_live import summarize_live_output
 from src.ingest.prepare_data import _read_tabular, _normalize_row
 from src.tools.ssh_client import load_ssh_config, run_ssh_command, _is_allowed
+from src.domain.telemetry_parser import normalize_telemetry
+from src.db.evidence_store import store_evidence_event
+
+# P0 Recommendations Integration
+from src.domain.circuit_breaker import get_circuit_breaker, CircuitState
+from src.domain.parallel_ssh import ParallelSSHExecutor
+from src.domain.dry_run import check_command_safety, format_confirmation_prompt
+from src.domain.policy_engine import evaluate_command_policy
 
 
 # Step 13: Live-RAG (SSH) node.
@@ -786,13 +794,15 @@ def _run_nvme_command(
     _ensure_allowlist_entries(cfg.ssh_config_path, [base_command])
     command = _ensure_sudo(base_command)
     try:
-        output = run_ssh_command(
+        result = run_ssh_command(
             host,
             command,
             cfg.ssh_config_path,
             timeout_sec=cfg.request_timeout_sec,
         )
-        return output, ""
+        if not result.success:
+            return "", result.stderr or f"Command failed with exit {result.exit_code}"
+        return result.stdout, ""
     except Exception as exc:
         return "", str(exc)
 
@@ -831,6 +841,16 @@ def _handle_nvme_error_bundle(current: GraphState, host: str, cfg, query: str) -
             filtered = _filter_nvme_bundle_output(filename, output)
             outputs[filename] = filtered or "No NVMe-related lines found."
         (artifact_dir / filename).write_text(outputs[filename], encoding="utf-8")
+        if current.session_id and not error:
+            signals = normalize_telemetry(filename, output)
+            if signals:
+                store_evidence_event(
+                    session_id=current.session_id,
+                    host=host,
+                    source=filename,
+                    signals=signals,
+                    raw_excerpt=output[:4000],
+                )
 
     nvme_entries = _parse_nvme_list_entries(raw_outputs.get("nvme_list.log", ""))
     devices = _extract_nvme_devices(raw_outputs.get("nvme_list.log", ""))
@@ -858,6 +878,16 @@ def _handle_nvme_error_bundle(current: GraphState, host: str, cfg, query: str) -
         else:
             outputs[filename] = output.strip()
         (artifact_dir / filename).write_text(outputs[filename], encoding="utf-8")
+        if current.session_id and not error:
+            signals = normalize_telemetry(filename, output)
+            if signals:
+                store_evidence_event(
+                    session_id=current.session_id,
+                    host=host,
+                    source=filename,
+                    signals=signals,
+                    raw_excerpt=output[:4000],
+                )
 
     if nvme_entries:
         (artifact_dir / "nvme_devices.json").write_text(
@@ -1202,6 +1232,68 @@ def _ensure_sudo(command: str) -> str:
     return f"sudo -n {cleaned}"
 
 
+def _check_circuit_breaker(host: str) -> tuple[bool, str]:
+    """Check if host circuit breaker allows execution.
+    
+    Returns:
+        (can_execute, message) - True if allowed, False with reason if blocked
+    """
+    try:
+        breaker = get_circuit_breaker(host)
+        if not breaker.can_execute():
+            status = breaker.get_status()
+            time_until_retry = int(status.get("time_until_retry", 600))
+            minutes = time_until_retry // 60
+            return False, (
+                f"🔴 **Circuit Open for `{host}`**\n\n"
+                f"This host has failed {status['failure_count']} times recently and is temporarily blocked.\n"
+                f"Retry in approximately {minutes} minutes, or use `/live circuit reset {host}` to force retry.\n\n"
+                f"Last failure: {status.get('last_failure', 'unknown')}"
+            )
+        return True, ""
+    except Exception as e:
+        # If circuit breaker fails, allow execution
+        _debug_log(f"Circuit breaker check failed: {e}")
+        return True, ""
+
+
+def _record_circuit_success(host: str) -> None:
+    """Record successful SSH execution for circuit breaker."""
+    try:
+        breaker = get_circuit_breaker(host)
+        breaker.record_success()
+    except Exception as e:
+        _debug_log(f"Circuit breaker success record failed: {e}")
+
+
+def _record_circuit_failure(host: str, error: str) -> None:
+    """Record failed SSH execution for circuit breaker."""
+    try:
+        breaker = get_circuit_breaker(host)
+        breaker.record_failure(error)
+    except Exception as e:
+        _debug_log(f"Circuit breaker failure record failed: {e}")
+
+
+def _check_destructive_command(command: str, session_id: str | None) -> tuple[bool, str]:
+    """Check if command is destructive and needs confirmation.
+    
+    Returns:
+        (needs_confirmation, preview_message)
+    """
+    try:
+        result = check_command_safety(command)
+        if result.requires_confirmation:
+            preview = format_confirmation_prompt(result)
+            return True, preview
+        return False, ""
+    except Exception as e:
+        _debug_log(f"Dry-run check failed: {e}")
+        return False, ""
+
+
+
+
 def live_rag_node(state: GraphState | dict) -> dict:
     """Execute an allowlisted SSH command and store the output."""
 
@@ -1321,12 +1413,52 @@ def live_rag_node(state: GraphState | dict) -> dict:
                 "Command is not allowlisted. Provide a session or approve via `/live approve <name>`."
             )
             return state_to_dict(current)
+        
+        # Policy check
+        policy_decision = evaluate_command_policy(
+            command,
+            user_context=query,
+        )
+        if not policy_decision.allowed:
+            if policy_decision.requires_approval and current.session_id:
+                set_live_pending(_live_path(), current.session_id, host, command)
+                current.response = (
+                    f"Policy requires approval for this command.\n"
+                    f"Reason: {policy_decision.reason}\n"
+                    "Approve with `/live execute` or include 'force' in the request if authorized."
+                )
+                return state_to_dict(current)
+            current.response = f"Command blocked by policy: {policy_decision.reason}"
+            return state_to_dict(current)
+
+        # P0 #13: Circuit Breaker Check
+        can_execute, circuit_msg = _check_circuit_breaker(host)
+        if not can_execute:
+            current.response = circuit_msg
+            return state_to_dict(current)
+        
+        # P0 #12: Dry-Run Check for Destructive Commands
+        needs_confirm, preview = _check_destructive_command(command, current.session_id)
+        if needs_confirm:
+            # Store pending destructive command for confirmation
+            if current.session_id:
+                set_live_pending(_live_path(), current.session_id, host, command)
+            current.response = preview
+            return state_to_dict(current)
+        
         _debug_log(f"calling _execute_live_command host={host} command={command}")
         _execute_live_command(current, host, command, cfg, output_mode=output_mode)
         _debug_log(f"live command executed, response length={len(current.response or '')}")
+        
+        # P0 #13: Record success for circuit breaker
+        _record_circuit_success(host)
     except Exception as exc:
         _debug_log(f"live command failed: {exc}")
-        current.tool_results.append(ToolResult(name="ssh", error=str(exc)))
+        
+        # P0 #13: Record failure for circuit breaker
+        _record_circuit_failure(host, str(exc))
+        
+        current.tool_results.append(ToolResult(name="ssh", error=str(exc), host=host, command=command))
         allowlist = []
         try:
             ssh_cfg = load_ssh_config(cfg.ssh_config_path)
@@ -1368,103 +1500,102 @@ def _handle_rack_nvme(current: GraphState, rack: str, cfg, query: str) -> GraphS
     if "sudo" in query.lower():
         command = "sudo nvme list"
 
-    def run_one(record: dict) -> dict:
+    host_records = []
+    skipped = []
+    for record in hosts:
         system_id = record.get("system_id", "")
         hostname = record.get("hostname", "")
         address = record.get("address", "")
         host_id = address or system_id or hostname
-        if not host_id:
-            return {
-                "label": "",
-                "system_id": system_id,
-                "hostname": hostname,
-                "drives": [],
-                "error": "missing host id",
-                "status": "skip system",
-                "reason": "missing host id",
-            }
         label = system_id or hostname or address
         if system_id and hostname and system_id != hostname:
             label = f"{system_id} ({hostname})"
+        if not host_id:
+            skipped.append(
+                {
+                    "label": label,
+                    "system_id": system_id,
+                    "hostname": hostname,
+                    "host_id": "",
+                    "error": "missing host id",
+                    "status": "skip system",
+                    "reason": "missing host id",
+                }
+            )
+            continue
         cached_failure = get_cached_failure(host_id, command, cfg.live_rack_failure_ttl_sec)
         if cached_failure:
-            return {
+            skipped.append(
+                {
+                    "label": label,
+                    "system_id": system_id,
+                    "hostname": hostname,
+                    "host_id": host_id,
+                    "error": f"skipped (cached failure): {cached_failure}",
+                    "status": "skip system",
+                    "reason": f"cached failure: {cached_failure}",
+                }
+            )
+            continue
+        host_records.append(
+            {
                 "label": label,
                 "system_id": system_id,
                 "hostname": hostname,
-                "drives": [],
-                "error": f"skipped (cached failure): {cached_failure}",
-                "status": "skip system",
-                "reason": f"cached failure: {cached_failure}",
                 "host_id": host_id,
             }
-        output = None
-        last_exc: Exception | None = None
-        attempts = max(1, cfg.live_retry_count)
-        for _ in range(attempts):
-            try:
-                output = run_ssh_command(
-                    host_id,
-                    command,
-                    cfg.ssh_config_path,
-                    timeout_sec=cfg.live_rack_timeout_sec,
-                )
-                last_exc = None
-                break
-            except Exception as exc:
-                last_exc = exc
-                continue
-        if output is None:
-            set_cached_failure(host_id, command, str(last_exc))
-            return {
-                "label": label,
-                "system_id": system_id,
-                "hostname": hostname,
-                "drives": [],
-                "error": str(last_exc),
-                "status": "skip system",
-                "reason": str(last_exc),
-                "host_id": host_id,
-            }
-        entries = _parse_nvme_list_entries(output)
-        return {
-            "label": label,
-            "system_id": system_id,
-            "hostname": hostname,
-            "drives": entries,
-            "error": "",
-            "status": "ok" if entries else "no drives",
-            "reason": "",
-            "host_id": host_id,
-        }
+        )
 
-    with ThreadPoolExecutor(max_workers=max(1, cfg.live_rack_max_workers)) as executor:
-        futures = [executor.submit(run_one, record) for record in hosts]
-        for future in as_completed(futures):
-            result = future.result()
-            label = result.get("label", "")
-            system_id = result.get("system_id", "")
-            hostname = result.get("hostname", "")
-            host_id = result.get("host_id", "")
-            error = result.get("error") or ""
-            status = result.get("status") or ""
-            reason = result.get("reason") or ""
-            entries = result.get("drives") or []
-            if error:
-                errors.append(f"{label}: {error}")
-                rows.append(
-                    {
-                        "Rack": rack,
-                        "service tag": system_id or hostname,
-                        "drive": "",
-                        "Serial Number (SN)": "",
-                        "Model": "",
-                        "Firmware": "",
-                        "status": status or "skip system",
-                        "reason": reason or error,
-                    }
-                )
-                continue
+    executor = ParallelSSHExecutor(
+        max_concurrent=max(1, cfg.live_rack_max_workers),
+        command_timeout_sec=cfg.live_rack_timeout_sec,
+        connection_timeout_sec=cfg.live_rack_timeout_sec,
+    )
+    host_ids = [r["host_id"] for r in host_records]
+
+    def _circuit_check(host_id: str) -> bool:
+        breaker = get_circuit_breaker(host_id)
+        return breaker.can_execute()
+
+    batch_result = executor.execute_on_hosts(
+        hosts=host_ids,
+        command=command,
+        ssh_config_path=cfg.ssh_config_path,
+        circuit_check=_circuit_check,
+    )
+
+    # Process skipped entries
+    for skipped_item in skipped:
+        label = skipped_item.get("label", "")
+        system_id = skipped_item.get("system_id", "")
+        hostname = skipped_item.get("hostname", "")
+        error = skipped_item.get("error", "")
+        status = skipped_item.get("status", "skip system")
+        reason = skipped_item.get("reason", "")
+        errors.append(f"{label}: {error}")
+        rows.append(
+            {
+                "Rack": rack,
+                "service tag": system_id or hostname,
+                "drive": "",
+                "Serial Number (SN)": "",
+                "Model": "",
+                "Firmware": "",
+                "status": status,
+                "reason": reason or error,
+            }
+        )
+
+    # Map host_id to record metadata
+    host_meta = {r["host_id"]: r for r in host_records}
+    for result in batch_result.results:
+        meta = host_meta.get(result.host, {})
+        label = meta.get("label", result.host)
+        system_id = meta.get("system_id", "")
+        hostname = meta.get("hostname", "")
+        if result.success:
+            get_circuit_breaker(result.host).record_success()
+            entries = _parse_nvme_list_entries(result.output)
             if not entries:
                 rows.append(
                     {
@@ -1474,8 +1605,8 @@ def _handle_rack_nvme(current: GraphState, rack: str, cfg, query: str) -> GraphS
                         "Serial Number (SN)": "",
                         "Model": "",
                         "Firmware": "",
-                        "status": status or "no drives",
-                        "reason": reason,
+                        "status": "no drives",
+                        "reason": "",
                     }
                 )
             else:
@@ -1488,10 +1619,26 @@ def _handle_rack_nvme(current: GraphState, rack: str, cfg, query: str) -> GraphS
                             "Serial Number (SN)": entry.get("serial", ""),
                             "Model": entry.get("model", ""),
                             "Firmware": entry.get("firmware", ""),
-                            "status": status or "ok",
-                            "reason": reason,
+                            "status": "ok",
+                            "reason": "",
                         }
                     )
+        else:
+            get_circuit_breaker(result.host).record_failure(result.error or "unknown error")
+            set_cached_failure(result.host, command, result.error or "unknown error")
+            errors.append(f"{label}: {result.error}")
+            rows.append(
+                {
+                    "Rack": rack,
+                    "service tag": system_id or hostname,
+                    "drive": "",
+                    "Serial Number (SN)": "",
+                    "Model": "",
+                    "Firmware": "",
+                    "status": "skip system",
+                    "reason": result.error or "unknown error",
+                }
+            )
 
     if not rows:
         current.response = (
@@ -1625,7 +1772,9 @@ def _handle_live_command(current: GraphState, query: str, strict_mode: bool) -> 
             current.response = "Usage: /live sudo-check <hostname|service_tag>"
             return current
         try:
-            run_ssh_command(host, "sudo -n true", cfg.ssh_config_path)
+            result = run_ssh_command(host, "sudo -n true", cfg.ssh_config_path)
+            if not result.success:
+                raise RuntimeError(result.stderr or "sudo check failed")
             current.response = f"Sudo check passed for {host}."
             if current.session_id:
                 set_live_status(
@@ -2082,6 +2231,7 @@ def _execute_live_command(
     """Run a live command, summarize output, and persist it."""
 
     cached = get_cached_output(host, command, cfg.live_cache_ttl_sec)
+    result = None
     if cached is not None:
         output = cached
     else:
@@ -2089,12 +2239,15 @@ def _execute_live_command(
         last_exc = None
         for attempt in range(retries + 1):
             try:
-                output = run_ssh_command(
+                result = run_ssh_command(
                     host,
                     command,
                     cfg.ssh_config_path,
                     timeout_sec=cfg.request_timeout_sec,
                 )
+                if not result.success:
+                    raise RuntimeError(result.stderr or f"Command failed with exit {result.exit_code}")
+                output = result.stdout
                 last_exc = None
                 break
             except Exception as exc:
@@ -2102,7 +2255,17 @@ def _execute_live_command(
         if last_exc is not None:
             raise last_exc
         set_cached_output(host, command, output)
-    current.tool_results.append(ToolResult(name="ssh", output=output))
+    current.tool_results.append(
+        ToolResult(
+            name="ssh",
+            stdout=(result.stdout if result else output) or "",
+            stderr=(result.stderr if result else ""),
+            exit_code=(result.exit_code if result else None),
+            duration_sec=(result.duration_sec if result else None),
+            host=host,
+            command=command,
+        )
+    )
     cleaned_output = _sanitize_output(output)
     summary = ""
     if cfg.live_summary_enabled and _should_summarize_output(cleaned_output or output):
@@ -2154,6 +2317,17 @@ def _execute_live_command(
         )
         current.last_live_output = cleaned_output or output
         current.last_live_summary = summary
+        # Store evidence from structured telemetry
+        source_hint = command
+        signals = normalize_telemetry(source_hint, cleaned_output or output)
+        if signals:
+            store_evidence_event(
+                session_id=current.session_id,
+                host=host,
+                source=source_hint,
+                signals=signals,
+                raw_excerpt=(cleaned_output or output)[:4000],
+            )
 
 
 def _summary_is_grounded(summary: str, output: str) -> bool:

@@ -164,6 +164,51 @@ def embed_text(base_url: str, model: str, text: str, timeout_sec: int) -> List[f
     return embedding
 
 
+def embed_text_batch(
+    base_url: str,
+    model: str,
+    texts: List[str],
+    timeout_sec: int,
+    batch_size: int = 16,
+) -> List[List[float]]:
+    """Return embedding vectors for multiple texts using batched requests.
+    
+    P2 Recommendation #19: Batched embedding for improved throughput.
+    
+    Args:
+        base_url: Ollama base URL
+        model: Embedding model name
+        texts: List of texts to embed
+        timeout_sec: Timeout per batch
+        batch_size: Number of texts per batch (default 16)
+        
+    Returns:
+        List of embedding vectors, one per input text
+    """
+    if not texts:
+        return []
+    
+    embeddings: List[List[float]] = []
+    
+    # Process in batches
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        batch_embeddings = []
+        
+        for text in batch:
+            try:
+                emb = embed_text(base_url, model, text, timeout_sec)
+                batch_embeddings.append(emb)
+            except Exception as e:
+                # Return empty embedding on error to maintain alignment
+                print(f"[WARN] Batch embedding failed for text: {e}", flush=True)
+                batch_embeddings.append([])
+        
+        embeddings.extend(batch_embeddings)
+    
+    return embeddings
+
+
 # Step 8: Build the answer context (chat via Ollama).
 
 def chat_completion(

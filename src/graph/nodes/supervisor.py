@@ -23,6 +23,11 @@ def supervisor_node(state: GraphState | dict) -> dict:
         current.route = "help"
         return state_to_dict(current)
 
+    preferred_route = (current.role_assignment or {}).get("preferred_route")
+    if preferred_route and not query.lower().startswith("/"):
+        current.route = preferred_route
+        return state_to_dict(current)
+
     approval_intent = _approval_intent(query)
     if approval_intent and current.session_id:
         proposed = get_live_proposed(_live_path(), current.session_id)
