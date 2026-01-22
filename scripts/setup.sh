@@ -312,12 +312,17 @@ index_database() {
         ollama pull "${EMBED_MODEL}"
     fi
 
-    # Run the indexing script
+    # Run the indexing script with resilience flags
     log_info "Running database indexing (this may take a while)..."
-    EMBED_TIMEOUT="${OLLAMA_EMBED_TIMEOUT_SEC:-${REQUEST_TIMEOUT_SEC:-300}}"
+    EMBED_TIMEOUT="${OLLAMA_EMBED_TIMEOUT_SEC:-${REQUEST_TIMEOUT_SEC:-600}}"
     log_info "Embedding timeout: ${EMBED_TIMEOUT}s"
+    log_info "Using --skip-failures and --batch-cooldown for stability"
     OLLAMA_EMBED_TIMEOUT_SEC="${EMBED_TIMEOUT}" \
-        "${VENV_DIR}/bin/python" index_data.py --processed-dir "${PROCESSED_DIR}" --progress-every 50
+        "${VENV_DIR}/bin/python" index_data.py \
+            --processed-dir "${PROCESSED_DIR}" \
+            --progress-every 25 \
+            --skip-failures \
+            --batch-cooldown 1.0
 
     log_success "Database indexing complete!"
 }

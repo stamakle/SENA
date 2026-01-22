@@ -926,7 +926,29 @@ def _handle_nvme_error_bundle(current: GraphState, host: str, cfg, query: str) -
 def _extract_command(query: str) -> str:
     """Extract a command string from the query."""
 
-    # Priority 1: Quoted commands (backticks, double quotes, single quotes)
+    # Priority 1: Natural language pattern with pipe-aware matching
+    # Match: Get/Run/Fetch <command possibly with pipes> from/on <host>
+    # Note: We do this BEFORE quoted string extraction to handle commands that CONTAIN quotes (e.g. grep "foo")
+    match = re.search(
+        r"(?:run|execute|get|fetch|summarize)\s+(.+?)\s+(?:on|against|in|from)\s+[\w.-]+\s*$",
+        query,
+        re.IGNORECASE,
+    )
+    if match:
+        cmd = match.group(1).strip()
+        # If the WHOLE command is wrapped in quotes, strip them.
+        # But be careful not to strip quotes that act as arguments (e.g. grep "foo") unless the whole thing is quoted.
+        if (cmd.startswith("`") and cmd.endswith("`")) or \
+           (cmd.startswith('"') and cmd.endswith('"')) or \
+           (cmd.startswith("'") and cmd.endswith("'")):
+            if len(cmd) > 2:
+                cmd = cmd[1:-1].strip()
+        
+        _debug_log(f"command_extract matched NL pattern (with host): {cmd}")
+        return cmd
+
+    # Priority 2: Quoted commands (backticks, double quotes, single quotes)
+    # Use this if no "Run ... on ..." structure is found
     match = re.search(r"`([^`]+)`", query)
     if match:
         _debug_log(f"command_extract matched backticks: {match.group(1).strip()}")
@@ -940,19 +962,7 @@ def _extract_command(query: str) -> str:
         _debug_log(f"command_extract matched single quotes: {match.group(1).strip()}")
         return match.group(1).strip()
 
-    # Priority 2: Natural language pattern with pipe-aware matching
-    # Match: Get/Run/Fetch <command possibly with pipes> from/on <host>
-    match = re.search(
-        r"(?:run|execute|get|fetch|summarize)\s+(.+?)\s+(?:on|against|in|from)\s+[\w.-]+\s*$",
-        query,
-        re.IGNORECASE,
-    )
-    if match:
-        cmd = match.group(1).strip()
-        _debug_log(f"command_extract matched NL pattern (with host): {cmd}")
-        return cmd
-
-    # Fallback: verb followed by rest of line
+    # Priority 3: Fallback - verb followed by rest of line
     match = re.search(r"(?:run|execute|get|fetch|summarize)\s+(.+)$", query, re.IGNORECASE)
     if match:
         cmd = match.group(1).strip()

@@ -138,6 +138,13 @@ def supervisor_node(state: GraphState | dict) -> dict:
         current.route = "critic"
         return state_to_dict(current)
 
+    # Contextual Lookup Check (Fix for "What is the BDF?" returning definitions instead of values)
+    if current.last_live_output and _is_contextual_lookup(query):
+        current.route = "response"
+        # We explicitly rely on history + live output, preventing retrieval pollution
+        current.context = "" 
+        return state_to_dict(current)
+
     augmented, filters, tables, step_mode = parse_query(query, current.history)
     current.augmented_query = augmented
     current.filters = filters
@@ -356,4 +363,23 @@ def _is_orchestrator_query(query: str) -> bool:
             return True
         if re.search(r"\b(tc|dsstc)-\d+\b", lower):
             return True
+
+def _is_contextual_lookup(query: str) -> bool:
+    """Return True if the query looks like a specific extraction from recent context."""
+    lower = query.lower()
+    
+    # Needs retrieval?
+    if any(k in lower for k in ("spec", "standard", "compliance", "datasheet", "docs", "manual")):
+        return False
+        
+    # Explicit follow-up phrases
+    if any(k in lower for k in ("this output", "that output", "last log", "the log", "previous result")):
+        return True
+    
+    # Short extraction questions (e.g., "what is the bdf", "show serial")
+    words = lower.split()
+    if len(words) < 12:
+        if any(k in lower for k in ("what", "whats", "show", "get", "find", "check", "verify")):
+             return True
+             
     return False

@@ -31,6 +31,13 @@
       "aliases": [],
       "summary_default": false,
       "description": "Approved command"
+    },
+    {
+      "name": "10-min-ago",
+      "command": "10 min ago",
+      "aliases": [],
+      "summary_default": false,
+      "description": "Approved command"
     }
   ]
 }
