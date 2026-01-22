@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
@@ -136,12 +137,95 @@ def _vector_literal(values: List[float]) -> str:
     return "[" + ",".join(str(v) for v in values) + "]"
 
 
+def _restart_ollama(ollama_url: str, wait_sec: float = 5.0) -> bool:
+    """Restart Ollama service to clear memory. Returns True if successful."""
+    
+    print("[INFO] Restarting Ollama to clear memory...", flush=True)
+    
+    try:
+        # Try systemctl first (for systemd-managed Ollama)
+        result = subprocess.run(
+            ["sudo", "systemctl", "restart", "ollama"],
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            print("[INFO] Ollama restarted via systemctl", flush=True)
+            time.sleep(wait_sec)
+            return _wait_for_ollama(ollama_url, timeout_sec=30)
+    except Exception:
+        pass
+    
+    try:
+        # Fallback: kill and restart manually
+        subprocess.run(["pkill", "-f", "ollama"], capture_output=True, timeout=10)
+        time.sleep(1.0)
+        
+        # Start ollama serve in background
+        subprocess.Popen(
+            ["ollama", "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        print("[INFO] Ollama restarted via pkill + ollama serve", flush=True)
+        time.sleep(wait_sec)
+        return _wait_for_ollama(ollama_url, timeout_sec=30)
+    except Exception as exc:
+        print(f"[WARN] Failed to restart Ollama: {exc}", flush=True)
+        return False
+
+
+def _wait_for_ollama(ollama_url: str, timeout_sec: float = 30) -> bool:
+    """Wait for Ollama to become available."""
+    
+    import urllib.request
+    import urllib.error
+    
+    url = f"{ollama_url}/api/version"
+    start = time.time()
+    
+    while time.time() - start < timeout_sec:
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                if resp.status == 200:
+                    print("[INFO] Ollama is ready", flush=True)
+                    return True
+        except (urllib.error.URLError, TimeoutError, Exception):
+            pass
+        time.sleep(1.0)
+    
+    print("[WARN] Ollama did not become ready in time", flush=True)
+    return False
+
+
+class OllamaRestartTracker:
+    """Track embedding calls and restart Ollama periodically."""
+    
+    def __init__(self, restart_every: int, ollama_url: str):
+        self.restart_every = restart_every
+        self.ollama_url = ollama_url
+        self.call_count = 0
+        self.enabled = restart_every > 0
+    
+    def tick(self) -> None:
+        """Called after each embedding. Restarts Ollama if threshold reached."""
+        if not self.enabled:
+            return
+        
+        self.call_count += 1
+        if self.call_count >= self.restart_every:
+            _restart_ollama(self.ollama_url)
+            self.call_count = 0
+
+
 def upsert_test_cases_safe(
     conn,
     records: Iterable[Dict[str, Any]],
     embed_fn,
     skip_failures: bool = False,
     cooldown_sec: float = 0.0,
+    restart_tracker: Optional[OllamaRestartTracker] = None,
 ) -> Tuple[int, int]:
     """Insert or update test case records. Returns (success_count, skip_count)."""
 
@@ -185,6 +269,11 @@ def upsert_test_cases_safe(
                     ),
                 )
                 success += 1
+                
+                # Track for Ollama restart
+                if restart_tracker:
+                    restart_tracker.tick()
+                
                 if cooldown_sec > 0:
                     time.sleep(cooldown_sec)
             except Exception as exc:
@@ -206,6 +295,7 @@ def upsert_system_logs_safe(
     embed_fn,
     skip_failures: bool = False,
     cooldown_sec: float = 0.0,
+    restart_tracker: Optional[OllamaRestartTracker] = None,
 ) -> Tuple[int, int]:
     """Insert or update system log records. Returns (success_count, skip_count)."""
 
@@ -243,6 +333,11 @@ def upsert_system_logs_safe(
                     ),
                 )
                 success += 1
+                
+                # Track for Ollama restart
+                if restart_tracker:
+                    restart_tracker.tick()
+                
                 if cooldown_sec > 0:
                     time.sleep(cooldown_sec)
             except Exception as exc:
@@ -264,6 +359,7 @@ def index_data(
     skip_failures: bool = False,
     cooldown_sec: float = 0.0,
     batch_cooldown_sec: float = 0.0,
+    ollama_restart_every: int = 0,
 ) -> None:
     """Index prepared JSONL data into Postgres."""
 
@@ -280,6 +376,13 @@ def index_data(
             "It might be crashing due to low memory or corruption. "
             "Check 'ollama serve' logs or try 'ollama rm <model> && ollama pull <model>'."
         )
+    
+    # Setup restart tracker
+    restart_tracker = None
+    if ollama_restart_every > 0:
+        print(f"[INFO] Will restart Ollama every {ollama_restart_every} embeddings", flush=True)
+        restart_tracker = OllamaRestartTracker(ollama_restart_every, cfg.ollama_base_url)
+    
     test_path = processed_dir / "test_cases.jsonl"
     system_path = processed_dir / "system_logs.jsonl"
 
@@ -310,7 +413,10 @@ def index_data(
         total = len(test_cases)
         for batch in _batch(test_cases, progress_every):
             success, skipped = upsert_test_cases_safe(
-                conn, batch, embed_fn, skip_failures=skip_failures, cooldown_sec=cooldown_sec
+                conn, batch, embed_fn,
+                skip_failures=skip_failures,
+                cooldown_sec=cooldown_sec,
+                restart_tracker=restart_tracker,
             )
             processed += len(batch)
             total_skipped += skipped
@@ -326,7 +432,10 @@ def index_data(
         total = len(system_logs)
         for batch in _batch(system_logs, progress_every):
             success, skipped = upsert_system_logs_safe(
-                conn, batch, embed_fn, skip_failures=skip_failures, cooldown_sec=cooldown_sec
+                conn, batch, embed_fn,
+                skip_failures=skip_failures,
+                cooldown_sec=cooldown_sec,
+                restart_tracker=restart_tracker,
             )
             processed += len(batch)
             total_skipped += skipped
@@ -378,6 +487,12 @@ def main() -> None:
         default=0.0,
         help="Seconds to wait between batches (helps Ollama recover)",
     )
+    parser.add_argument(
+        "--ollama-restart-every",
+        type=int,
+        default=0,
+        help="Restart Ollama every N embeddings to clear memory (0 = disabled)",
+    )
     args = parser.parse_args()
 
     index_data(
@@ -387,6 +502,7 @@ def main() -> None:
         skip_failures=args.skip_failures,
         cooldown_sec=args.cooldown,
         batch_cooldown_sec=args.batch_cooldown,
+        ollama_restart_every=args.ollama_restart_every,
     )
 
 
