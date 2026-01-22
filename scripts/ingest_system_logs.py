@@ -80,7 +80,7 @@ def ingest_system_logs() -> None:
                 cfg.ollama_base_url,
                 cfg.embed_model,
                 text,
-                cfg.request_timeout_sec,
+                cfg.embed_timeout_sec,
             )
 
     conn = None

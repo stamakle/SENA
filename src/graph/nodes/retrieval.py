@@ -35,7 +35,7 @@ def retrieval_node(state: GraphState | dict) -> dict:
             cfg.ollama_base_url,
             cfg.embed_model,
             query,
-            cfg.request_timeout_sec,
+            cfg.embed_timeout_sec,
         )
         records = hybrid_search(
             conn,

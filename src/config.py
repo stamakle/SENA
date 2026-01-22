@@ -23,6 +23,7 @@ class Config:
     chat_small_model: str
     chat_fast_model: str
     tool_picker_model: str
+    planner_model: str
     embed_model: str
     pg_dsn: str
     embed_dim: int
@@ -43,6 +44,7 @@ class Config:
     ssh_config_path: str
     chat_max_tokens: int
     request_timeout_sec: int
+    embed_timeout_sec: int
     live_output_mode: str
     live_summary_enabled: bool
     live_summary_model: str
@@ -67,12 +69,15 @@ class Config:
 def load_config() -> Config:
     """Load configuration from environment variables with safe defaults."""
 
+    request_timeout = int(os.getenv("REQUEST_TIMEOUT_SEC", "300"))
+    embed_timeout = int(os.getenv("OLLAMA_EMBED_TIMEOUT_SEC", str(request_timeout)))
     return Config(
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
         chat_model=os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:7b-instruct"),
         chat_small_model=os.getenv("OLLAMA_CHAT_SMALL_MODEL", "nemotron-mini:4b"),
         chat_fast_model=os.getenv("OLLAMA_CHAT_FAST_MODEL", "qwen2.5:1.5b"),
         tool_picker_model=os.getenv("OLLAMA_TOOL_PICKER_MODEL", "functiongemma"),
+        planner_model=os.getenv("OLLAMA_PLANNER_MODEL", os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:7b-instruct")),
         embed_model=os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
         pg_dsn=os.getenv("PG_DSN", "postgresql://postgres:postgres@localhost:5432/sena"),
         embed_dim=int(os.getenv("EMBED_DIM", "768")),
@@ -92,7 +97,8 @@ def load_config() -> Config:
         summary_update_every=int(os.getenv("SUMMARY_UPDATE_EVERY", "6")),
         ssh_config_path=os.getenv("SENA_SSH_CONFIG", "configs/ssh.json"),
         chat_max_tokens=int(os.getenv("CHAT_MAX_TOKENS", "1024")),
-        request_timeout_sec=int(os.getenv("REQUEST_TIMEOUT_SEC", "60")),
+        request_timeout_sec=request_timeout,
+        embed_timeout_sec=embed_timeout,
         live_output_mode=os.getenv("LIVE_OUTPUT_MODE", "full"),
         live_summary_enabled=os.getenv("LIVE_SUMMARY_ENABLED", "true").lower() in {"1", "true", "yes"},
         live_summary_model=os.getenv("LIVE_SUMMARY_MODEL", os.getenv("SUMMARY_MODEL", "nemotron-mini:4b")),

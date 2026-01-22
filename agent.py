@@ -479,7 +479,7 @@ class RAGSshAgent:
                 self.config.ollama_base_url,
                 self.config.embed_model,
                 query,
-                self.config.request_timeout_sec,
+                self.config.embed_timeout_sec,
             )
             embed_ms = (time.monotonic() - embed_start) * 1000
             _debug_log(f"embedding_dim={len(embedding)} model={self.config.embed_model}")

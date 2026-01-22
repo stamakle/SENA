@@ -85,7 +85,7 @@ def index_data(processed_dir: Path, limit: Optional[int], progress_every: int) -
                 cfg.ollama_base_url,
                 resolved_embed_model,
                 safe_text,
-                cfg.request_timeout_sec,
+                cfg.embed_timeout_sec,
             )
 
         test_cases = _load_jsonl(test_path, limit=limit)

@@ -314,7 +314,10 @@ index_database() {
 
     # Run the indexing script
     log_info "Running database indexing (this may take a while)..."
-    "${VENV_DIR}/bin/python" index_data.py --processed-dir "${PROCESSED_DIR}" --progress-every 50
+    EMBED_TIMEOUT="${OLLAMA_EMBED_TIMEOUT_SEC:-${REQUEST_TIMEOUT_SEC:-300}}"
+    log_info "Embedding timeout: ${EMBED_TIMEOUT}s"
+    OLLAMA_EMBED_TIMEOUT_SEC="${EMBED_TIMEOUT}" \
+        "${VENV_DIR}/bin/python" index_data.py --processed-dir "${PROCESSED_DIR}" --progress-every 50
 
     log_success "Database indexing complete!"
 }

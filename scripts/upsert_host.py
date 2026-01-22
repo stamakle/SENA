@@ -96,7 +96,7 @@ def upsert_host() -> None:
             cfg.ollama_base_url,
             cfg.embed_model,
             text_for_tsv or system_id,
-            cfg.request_timeout_sec,
+            cfg.embed_timeout_sec,
         )
         embedding_literal = _vector_literal(embedding)
 

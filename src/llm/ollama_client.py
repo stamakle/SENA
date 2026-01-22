@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -22,6 +23,11 @@ def _post_json(url: str, payload: Dict, timeout_sec: int) -> Dict:
     try:
         with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
             body = resp.read().decode("utf-8")
+    except (TimeoutError, socket.timeout) as exc:
+        raise RuntimeError(
+            f"Ollama request to {url} timed out after {timeout_sec}s. "
+            "Increase OLLAMA_EMBED_TIMEOUT_SEC or REQUEST_TIMEOUT_SEC."
+        ) from exc
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Ollama HTTP {exc.code}: {error_body}") from exc
@@ -37,6 +43,11 @@ def _get_json(url: str, timeout_sec: int) -> Dict:
     try:
         with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
             body = resp.read().decode("utf-8")
+    except (TimeoutError, socket.timeout) as exc:
+        raise RuntimeError(
+            f"Ollama request to {url} timed out after {timeout_sec}s. "
+            "Increase OLLAMA_EMBED_TIMEOUT_SEC or REQUEST_TIMEOUT_SEC."
+        ) from exc
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Ollama HTTP {exc.code}: {error_body}") from exc
@@ -97,8 +108,18 @@ def embed_text(base_url: str, model: str, text: str, timeout_sec: int) -> List[f
             break
         except RuntimeError as exc:
             last_exc = exc
-            msg = str(exc)
-            if "Ollama HTTP 500" in msg or "EOF" in msg:
+            msg_lower = str(exc).lower()
+            if any(
+                token in msg_lower
+                for token in (
+                    "ollama http 500",
+                    "eof",
+                    "timed out",
+                    "timeout",
+                    "connection reset",
+                    "connection aborted",
+                )
+            ):
                 if attempt < retries:
                     time.sleep(1.0 + attempt)
                     continue
