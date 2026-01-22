@@ -94,13 +94,35 @@ def ensure_model(base_url: str, model: str, timeout_sec: int) -> None:
 
 # Step 5: Build the vector index (embeddings via Ollama).
 
+
+# Step 5: Build the vector index (embeddings via Ollama).
+
+def validate_embedding_model(base_url: str, model: str, timeout_sec: int) -> bool:
+    """Check if the embedding model is working by running a small test."""
+    try:
+        embed_text(base_url, model, "warmup", timeout_sec)
+        return True
+    except Exception as exc:
+        print(f"Embedding model validation failed: {exc}", flush=True)
+        return False
+
+
 def embed_text(base_url: str, model: str, text: str, timeout_sec: int) -> List[float]:
     """Return an embedding vector for the given text using Ollama."""
 
+    # Safety: Truncate very long text to prevent Ollama/Model OOM or Crash
+    # nomic-embed-text has ~8k context, but 12k chars is a safer upper bound for unstable systems.
+    MAX_CHARS = 12000
+    if len(text) > MAX_CHARS:
+        print(f"Warning: Truncating text for embedding ({len(text)} -> {MAX_CHARS} chars)", flush=True)
+        text = text[:MAX_CHARS]
+
     url = f"{base_url}/api/embeddings"
     payload = {"model": model, "prompt": text}
-    retries = int(os.getenv("OLLAMA_RETRY_COUNT", "2"))
+    # Increase default retries for stability
+    retries = int(os.getenv("OLLAMA_RETRY_COUNT", "3"))
     last_exc: Exception | None = None
+    
     for attempt in range(retries + 1):
         try:
             data = _post_json(url, payload, timeout_sec)
@@ -118,10 +140,15 @@ def embed_text(base_url: str, model: str, text: str, timeout_sec: int) -> List[f
                     "timeout",
                     "connection reset",
                     "connection aborted",
+                    "service unavailable",
                 )
             ):
+                print(f"Ollama embedding error (attempt {attempt+1}/{retries+1}): {exc}", flush=True)
                 if attempt < retries:
-                    time.sleep(1.0 + attempt)
+                    # Exponential backoff with jitter to help recovery
+                    wait_time = 2.0 + (attempt * 2)
+                    print(f"Retrying in {wait_time}s...", flush=True)
+                    time.sleep(wait_time)
                     continue
             raise
     if last_exc is not None:

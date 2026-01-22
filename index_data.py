@@ -19,7 +19,7 @@ from src.db.postgres import (
     upsert_system_logs,
     upsert_test_cases,
 )
-from src.llm.ollama_client import embed_text, ensure_model, resolve_model
+from src.llm.ollama_client import embed_text, ensure_model, resolve_model, validate_embedding_model
 
 
 # Step 6: Load data + build embeddings and indexes.
@@ -66,6 +66,14 @@ def index_data(processed_dir: Path, limit: Optional[int], progress_every: int) -
         cfg.ollama_base_url, cfg.embed_model, cfg.request_timeout_sec
     )
     ensure_model(cfg.ollama_base_url, resolved_embed_model, cfg.request_timeout_sec)
+
+    print(f"Validating embedding model {resolved_embed_model}...", flush=True)
+    if not validate_embedding_model(cfg.ollama_base_url, resolved_embed_model, cfg.embed_timeout_sec):
+        raise RuntimeError(
+            f"Embedding model '{resolved_embed_model}' failed validation. "
+            "It might be crashing due to low memory or corruption. "
+            "Check 'ollama serve' logs or try 'ollama rm <model> && ollama pull <model>'."
+        )
     test_path = processed_dir / "test_cases.jsonl"
     system_path = processed_dir / "system_logs.jsonl"
 
