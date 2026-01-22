@@ -18,6 +18,17 @@ def critic_node(state: GraphState | dict) -> dict:
         current.critique = "No plan to critique."
         return state_to_dict(current)
 
+    # BLOCKLIST: Fast-fail dangerous keywords before LLM
+    dangerous_keywords = ["format", "mkfs", "wipe", "dd if=", "shred", "blkdiscard"]
+    plan_lower = current.plan.lower()
+    if any(k in plan_lower for k in dangerous_keywords):
+        current.critique = (
+            "⛔ **CRITIQUE: DANGEROUS ACTION DETECTED**\n"
+            "This plan involves destructive keywords (format/mkfs/wipe).\n"
+            "**Recommendation:** REJECT immediately unless 'FORCE' flag is explicitly provided by the Supervisor."
+        )
+        return state_to_dict(current)
+
     system_prompt = (
         "You are an Adversarial 'Red Team' Validation Architect.\n"
         "Your goal is to BREAK the proposed test plan by finding edge cases, safety risks, and logic flaws.\n"

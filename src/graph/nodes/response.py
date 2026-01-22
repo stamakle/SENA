@@ -607,8 +607,17 @@ def response_node(state: GraphState | dict) -> dict:
     # Rec 9: Auto-generate reproduction bundle if we have an error context
     if "error" in (current.response or "").lower() and current.plan:
         try:
-            exports_dir = Path(os.getenv("SENA_EXPORTS_DIR", str(Path(__file__).resolve().parents[3] / "data" / "exports")))
+            # Robustly resolve export path
+            project_root = Path(os.getenv("SENA_PROJECT_ROOT", str(Path(__file__).resolve().parents[3])))
+            exports_dir = project_root / "data" / "exports"
             exports_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Ensure safe permissions (chmod 777 for dev/demo)
+            try:
+                os.chmod(exports_dir, 0o777)
+            except Exception:
+                pass # Ignore permission errors chmod-ing the dir itself
+
             repro_path = exports_dir / f"repro_{current.session_id[:8]}.sh"
             with open(repro_path, "w") as f:
                 f.write("#!/bin/bash\n# Reproduction Script\n")
@@ -619,9 +628,16 @@ def response_node(state: GraphState | dict) -> dict:
                 # In a real system, we'd iterate over executed steps.
                 f.write("echo 'Run validation...'\n")
             
+            # Try to make file readable
+            try:
+                os.chmod(repro_path, 0o666)
+            except Exception:
+                pass
+
             current.response += f"\n\nBundle saved: {repro_path}"
         except Exception as e:
-            current.response += f"\n(Failed to save Bundle: {e})"
+            # Fallback message instead of crash
+            current.response += f"\n(Note: Failed to save reproduction script: {e})"
 
     cfg = load_config()
     query = current.augmented_query or current.query

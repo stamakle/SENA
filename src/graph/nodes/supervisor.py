@@ -118,6 +118,26 @@ def supervisor_node(state: GraphState | dict) -> dict:
         current.route = "help"
         return state_to_dict(current)
 
+    # Autonomy Routing
+    if "plan" in lower or "roadmap" in lower or "strategy" in lower:
+        current.route = "planner"
+        return state_to_dict(current)
+    if any(k in lower for k in ("analyze", "investigate", "root cause", "hypothesis", "why did", "explain why")):
+        current.route = "scientist"
+        return state_to_dict(current)
+    if "drift" in lower or "trend" in lower or "deviation" in lower:
+        current.route = "drift"
+        return state_to_dict(current)
+    if "correlate" in lower or "correlation" in lower or "pattern" in lower or "common factor" in lower:
+        current.route = "correlation"
+        return state_to_dict(current)
+    if "triage" in lower or "similar issue" in lower or "known issue" in lower or "history" in lower:
+        current.route = "triage"
+        return state_to_dict(current)
+    if "critique" in lower or "review plan" in lower or "safety check" in lower:
+        current.route = "critic"
+        return state_to_dict(current)
+
     augmented, filters, tables, step_mode = parse_query(query, current.history)
     current.augmented_query = augmented
     current.filters = filters

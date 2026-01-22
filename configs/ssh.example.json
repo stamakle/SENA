@@ -1,8 +1,8 @@
 {
-  "default_user": "aseda",
+  "default_user": "user",
   "default_port": 22,
-  "default_key_path": "/home/aseda/.ssh/id_rsa",
-  "default_password": "selorm",
+  "default_key_path": "~/.ssh/id_ed25519",
+  "default_password": "",
   "allowlist": [
     "uname -a",
     "sudo",
@@ -35,7 +35,8 @@
     "python3 /tmp/sena_tools/TC-3362/TC-3362_physical_slot_num.py --log-folder /tmp/sena_tools/TC-3362",
     "nvme smart-log /dev/nvme1",
     "nvme error-log /dev/nvme1",
-    "nvme fw-log /dev/nvme1"
+    "nvme fw-log /dev/nvme1",
+    "python3 /tmp/sena_tools/DSSTC-5351/dsstc-5351_fio.py --device /dev/nvme0n1 --execute"
   ],
   "timeout_sec": 30
 }

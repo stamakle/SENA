@@ -14,6 +14,10 @@ def scientist_node(state: GraphState | dict) -> dict:
     # We analyze the 'response' or 'last_live_output' to form a hypothesis
     observation = current.response or current.last_live_output
     if not observation:
+        # Fallback: Treat the query itself as the observation (e.g. "Why did X happen?")
+        observation = current.query
+        
+    if not observation:
         current.response = "No observation to analyze."
         return state_to_dict(current)
 

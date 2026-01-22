@@ -93,8 +93,22 @@ def create_tables(conn, embed_dim: int) -> None:
             )
             """
         )
+        # Spec-RAG Table
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS specs (
+                id SERIAL PRIMARY KEY,
+                title TEXT,
+                content TEXT,
+                metadata JSONB,
+                tsv TSVECTOR,
+                embedding VECTOR({embed_dim})
+            )
+            """
+        )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_test_cases_tsv ON test_cases USING GIN(tsv)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_system_logs_tsv ON system_logs USING GIN(tsv)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_specs_tsv ON specs USING GIN(tsv)")
     conn.commit()
 
 

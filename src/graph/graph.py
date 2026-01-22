@@ -170,7 +170,10 @@ def build_graph():
     )
     graph.add_edge("retrieval", "response")
     graph.add_edge("live_rag", "response")
-    graph.add_edge("planner", "response")
+    # Planner & Scientist loop through Critic for safety/robustness
+    graph.add_edge("planner", "critic")
+    graph.add_edge("scientist", "critic")
+    
     graph.add_edge("validator", "response")
     graph.add_edge("report", "response")
     graph.add_edge("orchestrator", "response")
@@ -190,7 +193,7 @@ def build_graph():
     
     # Autonomy Edges -> Response
     graph.add_edge("critic", "response")
-    graph.add_edge("scientist", "response")
+    # graph.add_edge("scientist", "response") # Now routed to critic
     graph.add_edge("correlation", "response")
     graph.add_edge("drift", "response")
     graph.add_edge("triage", "response")

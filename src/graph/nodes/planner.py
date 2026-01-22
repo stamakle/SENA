@@ -2,23 +2,37 @@
 
 from __future__ import annotations
 
-from src.graph.state import GraphState, coerce_state, state_to_dict
 
+from src.config import load_config
+from src.graph.state import GraphState, coerce_state, state_to_dict
+from src.llm.ollama_client import chat_completion
 
 def planner_node(state: GraphState | dict) -> dict:
-    """Return a simple plan outline for the requested task."""
-
+    """Generate a high-level plan for the requested task using LLM."""
     current = coerce_state(state)
     query = current.augmented_query or current.query
-    cleaned = query
-    if cleaned.lower().startswith("/plan"):
-        cleaned = cleaned[len("/plan") :].strip()
-    current.response = (
-        "Proposed plan:\n\n"
-        f"- Clarify scope and target systems for: {cleaned or 'SSD validation task'}\n"
-        "- Gather relevant test cases and recent logs\n"
-        "- Run required live checks (lspci, nvme list, dmesg)\n"
-        "- Validate results against expected outcomes\n"
-        "- Summarize findings and next actions"
+    cfg = load_config()
+
+    system_prompt = (
+        "You are an Expert SSD Validation Planner.\n"
+        "Create a concise, executable, step-by-step plan for the user's request.\n"
+        "Focus on NVMe tools (nvme-cli), Linux commands, and validation best practices.\n"
+        "Do not include conversational filler. Just the steps."
     )
+
+    try:
+        response = chat_completion(
+            cfg.ollama_base_url,
+            cfg.planner_model,
+            system_prompt,
+            f"User Request: {query}",
+            cfg.request_timeout_sec,
+        )
+        current.plan = response
+        current.response = f"**Proposed Plan:**\n{response}"
+    except Exception as exc:
+        current.error = f"Planner failed: {exc}"
+        # Fallback
+        current.response = f"Failed to generate plan. Error: {exc}"
+
     return state_to_dict(current)

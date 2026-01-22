@@ -16,6 +16,9 @@ __pycache__/
 # NiceGUI cache
 .nicegui/
 
+# Local SSH config (use configs/ssh.example.json)
+configs/ssh.json
+
 # Local session and telemetry artifacts
 session_live.json
 session_summaries.json
