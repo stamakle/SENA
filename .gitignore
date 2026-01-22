@@ -24,6 +24,8 @@ session_live.json
 session_summaries.json
 chat_history_lite.jsonl
 logs/
+validation_log.jsonl
+validation_report*.md
 
 # Local data files (keep directory structure only)
 /data/**
