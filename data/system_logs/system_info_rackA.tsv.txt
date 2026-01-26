@@ -1,4 +1,0 @@
-Test Group	Rack	host  IP	idrac ip	Model	Service tag	Hostname	sys_gen	Form	Slot	bios version	cpu_name	cpu family	memory	backplane	boss card info	perc info	perc version
-HP_test	A1	192.168.239.128	10.148.76.242	R740	42WFTK1	kwame	14G	E3.s	0	2.24.0	Intel Xeon Bronze 3104	Skylake	DDR4 DIMM	2.52	BOSS-S1	None - perc	0
-HP_test	A1	169.254.66.159	10.148.76.246	R740XD	D82DVK3	aseda-HP-EliteBook-x360-830-G7-Notebook-PC	14G	U.2	32	2.20.1	Intel Xeon Bronze 3104	Skylake	DDR4 DIMM	2.52	BOSS-S1	PERC H740P Mini	2.5.13.3022
-HP_test	A1	10.148.83.227	10.148.76.239	R640	9P0BXJ4	CVE-HP-G50OCFG	14G	U.2	8	2.24.0	Intel Xeon Bronze 3104	Skylake	DDR4 DIMM	4.35	BOSS-S1	None - perc	0
