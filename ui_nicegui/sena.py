@@ -1,4 +1,4 @@
-"""SENA UI v5.2 - Hybrid Design (Gemini Aesthetics + Enterprise Logic)"""
+"""SENA UI v1 - Hybrid Design """
 from __future__ import annotations
 
 import asyncio
